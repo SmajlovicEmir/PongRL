@@ -1,13 +1,11 @@
-import gym
-from gym import spaces
+import gymnasium
+from gymnasium.spaces import Discrete
 import numpy as np
 from typing import Optional
-from gym.envs.registration import register
-import pygame
 import random
-from gym.spaces import Discrete
 
-class RoboPongEnv(gym.Env):
+
+class RoboPongEnv(gymnasium.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
 
     def __init__(self, render_mode: Optional[str] = None, size: int = 5):
@@ -45,9 +43,10 @@ class RoboPongEnv(gym.Env):
         'determines ball velocity'
         self.ball_x_direction = random.choice([-2, 2])
         self.ball_y_direction = random.choice([-2, 2])
-        self.observation_space = spaces.Box(np.array([0,0,0,0, -1*self.window_sizey], dtype=np.float32),
-                                            np.array([self.window_sizey,self.window_sizex,self.window_sizey,
-                                                      self.window_sizex,self.window_sizey], dtype=np.float32), dtype=np.float32)
+        self.observation_space = spaces.Box(np.array([0, 0, 0, 0, -1 * self.window_sizey], dtype=np.float32),
+                                            np.array([self.window_sizey, self.window_sizex, self.window_sizey,
+                                                      self.window_sizex, self.window_sizey], dtype=np.float32),
+                                            dtype=np.float32)
         """
         self.observation_space = spaces.Dict(
             {
@@ -56,7 +55,10 @@ class RoboPongEnv(gym.Env):
             }
         )
         """
-        self.action_space = spaces.Discrete(2)
+        dummy = Discrete(2)
+        print(type(dummy))
+
+        self.action_space = gymnasium.spaces.Discrete(2)
         self._action_to_direction = {
             0: 1 if 100 <= self.paddle_agent_rect.y else 0,
             1: 1 if 100 <= self.paddle_agent_rect.y <= 290 else 0,
@@ -92,8 +94,8 @@ class RoboPongEnv(gym.Env):
     def _get_obs(self):
         self.delta_x = abs(self.ball_target_rect.midright[0] - self.paddle_agent_rect.midright[0])
         self.delta_y = self.ball_target_rect.midright[1] - self.paddle_agent_rect.midleft[1]
-        self.obs_array=[self.paddle_agent_rect.x,self.ball_target_rect.x, self.ball_target_rect.y, self.delta_x,
-                        self.delta_y]
+        self.obs_array = [self.paddle_agent_rect.x, self.ball_target_rect.x, self.ball_target_rect.y, self.delta_x,
+                          self.delta_y]
         return np.array(self.obs_array, dtype=np.float32)
 
     def _get_info(self):
@@ -124,7 +126,7 @@ class RoboPongEnv(gym.Env):
             self.paddle_agent_rect.y -= self._action_to_direction[0]
         elif action == 1:
             self.paddle_agent_rect.y += self._action_to_direction[1]
-        #elif action == 2:
+        # elif action == 2:
         #    self.paddle_agent_rect.y += self._action_to_direction[2]
 
         'determines the direction of the ball'
@@ -146,7 +148,7 @@ class RoboPongEnv(gym.Env):
         info = self._get_info()
 
         if self.paddle_agent_rect.colliderect(self.ball_target_rect):
-            self.ball_target_rect.x -=4
+            self.ball_target_rect.x -= 4
             self.ball_x_direction = self.ball_x_direction * -1
             count += 1
             self.temp_reward += 100
@@ -166,7 +168,7 @@ class RoboPongEnv(gym.Env):
             self.rewhist.append(self.reward)
         """
         'did the opposite one score'
-        done = False
+        terminated = False
 
         'negative reward for the loss of a point'
         if self.ball_target_rect.x >= 790:
@@ -175,16 +177,17 @@ class RoboPongEnv(gym.Env):
             if len(self.rewhist) > 2:
                 self.rewhistnp = np.array(self.rewhist)
                 self.reward = (self.temp_reward - self.rewhistnp.mean()) / (np.std(self.rewhistnp) + 1e-10)
-            done = True
+            terminated = True
             """
             if done:
                 self.reset()
             """
 
-        #print(f"rewhistnpstd: {np.std(self.rewhistnp)}")
+        # print(f"rewhistnpstd: {np.std(self.rewhistnp)}")
 
-        #self.render()
-        return observation, self.reward, done, info
+        # self.render()
+        truncated = False
+        return observation, self.reward, terminated, truncated, info
 
     def render(self, mode="human"):
         import pygame
@@ -194,7 +197,7 @@ class RoboPongEnv(gym.Env):
         self.window.blit(self.ground_surface1, self.ground_rect1)
         self.window.blit(self.ground_surface2, self.ground_rect2)
         pygame.display.update()
-        self.clock.tick(120)
+        self.clock.tick(60)
 
     def close(self):
         if self.window is not None:
