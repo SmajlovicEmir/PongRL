@@ -1,8 +1,10 @@
 import gymnasium
-from gymnasium.spaces import Discrete
+from gymnasium import spaces
 import numpy as np
 from typing import Optional
+import pygame
 import random
+from gymnasium.spaces import Discrete
 
 
 class RoboPongEnv(gymnasium.Env):
@@ -12,9 +14,8 @@ class RoboPongEnv(gymnasium.Env):
         import pygame
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.reward = int()
-        self.rewhist = []
-        self.rewhistnp = np.array(self.rewhist)
         pygame.font.init()
+        self.count = 0
         'creates the paddle agent'
         self.paddle_agent = pygame.Surface((10, 100))
         self.paddle_agent.fill("Grey")
@@ -29,39 +30,39 @@ class RoboPongEnv(gymnasium.Env):
         self.window_sizex = 800
         self.window_sizey = 400
         'make a dummy paddle that always hits'
-        self.dummy_paddle = pygame.Surface((10, 400))
+        self.dummy_paddle = pygame.Surface((10, self.window_sizey))
         self.dummy_paddle.fill('Grey')
         self.dummy_paddle_rect = self.dummy_paddle.get_rect(topleft=(0, 0))
-        'make ground rectangles'
-        self.ground_surface1 = pygame.Surface((800, 10))
+        'make ground rectangle'
+        self.ground_surface1 = pygame.Surface((self.window_sizex, 10))
         self.ground_surface1.fill('Grey')
         self.ground_rect1 = self.ground_surface1.get_rect(topleft=(0, 390))
         'ceiling'
-        self.ground_surface2 = pygame.Surface((800, 10))
+        self.ground_surface2 = pygame.Surface((self.window_sizex, 10))
         self.ground_surface2.fill('Grey')
         self.ground_rect2 = self.ground_surface2.get_rect(topleft=(0, 0))
         'determines ball velocity'
         self.ball_x_direction = random.choice([-2, 2])
         self.ball_y_direction = random.choice([-2, 2])
-        self.observation_space = spaces.Box(np.array([0, 0, 0, 0, -1 * self.window_sizey], dtype=np.float32),
-                                            np.array([self.window_sizey, self.window_sizex, self.window_sizey,
-                                                      self.window_sizex, self.window_sizey], dtype=np.float32),
+        self.observation_space = spaces.Box(low = np.array([0, # lowest possible observation paddle
+                                                      0, # lowest possible observation ball.x
+                                                      0, # lowest possible observation ball.x
+                                                      -self.window_sizex, # lowest possible observation delta x
+                                                      -self.window_sizey # lowest possible observation delta.y
+                                                      ], dtype=np.float32),
+                                            high =np.array([self.window_sizey, # highest possible observation paddle.y
+                                                      self.window_sizex, # highest possible observation ball.x
+                                                      self.window_sizey, # highest possible observation ball.y
+                                                      0, # highest possible observation delta.x
+                                                      self.window_sizey] # highest possible observation delta.y
+                                                     , dtype=np.float32),
                                             dtype=np.float32)
-        """
-        self.observation_space = spaces.Dict(
-            {
-                "agent": spaces.Box(0, self.window_sizey, shape=(1,), dtype=int),
-                "target": spaces.Box(0, self.window_sizex, shape=(2,), dtype=int),
-            }
-        )
-        """
-        dummy = Discrete(2)
-        print(type(dummy))
 
-        self.action_space = gymnasium.spaces.Discrete(2)
+        self.action_space = spaces.Discrete(2)
         self._action_to_direction = {
-            0: 1 if 100 <= self.paddle_agent_rect.y else 0,
-            1: 1 if 100 <= self.paddle_agent_rect.y <= 290 else 0,
+            0: -1 if 10 <= self.paddle_agent_rect.topleft[1] else 0,  # zero for up
+            1: 1 if self.paddle_agent_rect.bottomleft[1] <= self.window_sizey - self.dummy_paddle_rect.top else 0,
+            # one for down
         }
         if render_mode == "human":
             import pygame  # import here to avoid pygame dependency with no render
@@ -70,20 +71,100 @@ class RoboPongEnv(gymnasium.Env):
         pygame.display.init()
         self.window = pygame.display.set_mode((self.window_sizex, self.window_sizey))
         self.clock = pygame.time.Clock()
+        self.info = {"paddle y": 0,
+                     "ball x ": 0,
+                     "ball y ": 0,
+                     "delta x ": 0,
+                     "delta y ": 0,
+                     }
+        self.key_list = list(self.info)
+
+    def _get_obs(self):
+        self.delta_x = (self.ball_target_rect.midright[0] - self.paddle_agent_rect.midright[0])
+        self.delta_y = self.ball_target_rect.midright[1] - self.paddle_agent_rect.midleft[1]
+        self.obs_array = [self.paddle_agent_rect.y, # vertical alignment of the paddle
+                          self.ball_target_rect.x, # horizontal position of the ball
+                          self.ball_target_rect.y, # vertical position of the ball
+                          self.delta_x, # difference between paddle x and ball x
+                          self.delta_y] # difference between paddle y and ball y
+        return np.array(self.obs_array, dtype=np.float32)
+
+    def _get_info(self):
+        for key,obs in zip(self.key_list, self._get_obs()):
+            self.info[key] = obs
+        return self.info
+
+    def step(self, action):
+        self.window.fill(0)
+
+        # this is to prevent crashing when clicking away from the screen
+        for event in pygame.event.get():
+            if event.type == pygame.MOUSEBUTTONUP:
+                None
+
+        # setup of the action space
+        self._action_to_direction = {
+            0: -1 if self.ground_rect2.bottom <= self.paddle_agent_rect.topleft[1] else 1, # zero for up
+            1: 1 if self.paddle_agent_rect.bottomleft[1] + 10 <= self.window_sizey - self.ground_rect2.top else 0, # one for down
+        }
+        self.reward = 0
+
+        # moves the agent (paddle)
+        self.paddle_agent_rect.y += self._action_to_direction[action]
+
+        # determines the direction of the ball
+        self.ball_target_rect.y += self.ball_y_direction
+        self.ball_target_rect.x += self.ball_x_direction
+
+        # gives a reward if the ball is within the upper and lower boundaries of paddle.y
+        # this is to decrease the sparsness of the rewards
+        if self.paddle_agent_rect.topleft[1] < self.ball_target_rect.midright[1] < self.paddle_agent_rect.bottomleft[1]:
+            self.reward = 1
+        else:
+            self.reward = -1
+
+        # determines the collision
+
+        if self.paddle_agent_rect.colliderect(self.ball_target_rect):
+            self.ball_target_rect.x -= 4
+            self.ball_x_direction = self.ball_x_direction * -1
+            self.count += 1
+            self.reward = 100
+
+        # changes the balls direction if it hits one of the boundaries or the paddle
+        if self.dummy_paddle_rect.colliderect(self.ball_target_rect):
+            self.ball_x_direction = self.ball_x_direction * -1
+
+        if self.ground_rect1.colliderect(self.ball_target_rect) or self.ground_rect2.colliderect(self.ball_target_rect):
+            self.ball_y_direction = self.ball_y_direction * -1
+
+        #additional reward for scoring a multiple of 21 points
+        if self.count % 21 == 0 and self.count > 0 :
+            self.reward = 10000
+
+
+        # gives a negative reward for losing a point, alse determines if the episode is over
+        terminated = False
+        if self.ball_target_rect.x >= 790:
+            self.reward = -100
+            terminated = True
+
+        # for return purposes, returns the observations in both cases, info can be used for debugging purposes
+        observation = self._get_obs()
+        info = self._get_info()
+
+        return observation, self.reward, terminated, False, info
 
     def reset(self, seed=None, return_info=False, options=None):
         self.window.fill(0)
         for event in pygame.event.get():
             if event.type == pygame.MOUSEBUTTONUP:
                 None
-        count = 0
-        self.ball_target_rect.x = 400
-        self.ball_target_rect.y = 200
-        self.paddle_agent_rect.y = 100
-        self.temp_reward = 0
-        # self.reward = 0
-        self._paddle_pos = np.array([self.paddle_agent_rect.y], dtype=np.float32)
-        self._ball_pos = np.array(([self.ball_target_rect.x, self.ball_target_rect.y]), dtype=np.float32)
+        self.count = 0
+        self.ball_target_rect.x = self.window_sizex/2
+        self.ball_target_rect.y = self.window_sizey/2
+        self.paddle_agent_rect.y = self.window_sizey/2
+        self.reward = 0
         self.ball_x_direction = random.choice([-2, 2])
         self.ball_y_direction = random.choice([-2, 2])
         observation = self._get_obs()
@@ -91,105 +172,7 @@ class RoboPongEnv(gymnasium.Env):
         return_info = False
         return (observation, info) if return_info else observation
 
-    def _get_obs(self):
-        self.delta_x = abs(self.ball_target_rect.midright[0] - self.paddle_agent_rect.midright[0])
-        self.delta_y = self.ball_target_rect.midright[1] - self.paddle_agent_rect.midleft[1]
-        self.obs_array = [self.paddle_agent_rect.x, self.ball_target_rect.x, self.ball_target_rect.y, self.delta_x,
-                          self.delta_y]
-        return np.array(self.obs_array, dtype=np.float32)
-
-    def _get_info(self):
-        return {"paddle y": self.paddle_agent_rect.y,
-                "ball y": self.ball_target_rect.y,
-                "ball x": self.ball_target_rect.x}
-
-    def step(self, action):
-        self.window.fill(0)
-        for event in pygame.event.get():
-            if event.type == pygame.MOUSEBUTTONUP:
-                None
-        self._action_to_direction = {
-            0: 1 if 10 <= self.paddle_agent_rect.y else 0,
-            1: 1 if self.paddle_agent_rect.y <= 300 else 0,
-        }
-
-        count = 0
-        'keeps the paddle within the boundaries'
-        """
-        if self.paddle_agent_rect.y >= 300:
-            self.paddle_agent_rect.y -= 2
-        if self.paddle_agent_rect.y <= 10:
-            self.paddle_agent_rect.y += 2
-        """
-        'moves the agent'
-        if action == 0:
-            self.paddle_agent_rect.y -= self._action_to_direction[0]
-        elif action == 1:
-            self.paddle_agent_rect.y += self._action_to_direction[1]
-        # elif action == 2:
-        #    self.paddle_agent_rect.y += self._action_to_direction[2]
-
-        'determines the direction of the ball'
-        self.ball_target_rect.y += self.ball_y_direction
-        self.ball_target_rect.x += self.ball_x_direction
-
-        'reward if ball within paddle boundary'
-        """
-        if self.paddle_agent_rect.topleft[1] < self.ball_target_rect.midright[1] < self.paddle_agent_rect.bottomleft[1]:
-            self.reward += 1
-            self.rewhist.append(self.reward)
-        else:
-            self.reward -= 1
-            self.rewhist.append(self.reward)
-        """
-        'determines the collision'
-
-        observation = self._get_obs()
-        info = self._get_info()
-
-        if self.paddle_agent_rect.colliderect(self.ball_target_rect):
-            self.ball_target_rect.x -= 4
-            self.ball_x_direction = self.ball_x_direction * -1
-            count += 1
-            self.temp_reward += 100
-            self.rewhist.append(self.temp_reward)
-            if len(self.rewhist) > 2:
-                self.rewhistnp = np.array(self.rewhist)
-                self.reward = (self.temp_reward - self.rewhistnp.mean()) / np.std(self.rewhistnp)
-
-        if self.dummy_paddle_rect.colliderect(self.ball_target_rect):
-            self.ball_x_direction = self.ball_x_direction * -1
-
-        if self.ground_rect1.colliderect(self.ball_target_rect) or self.ground_rect2.colliderect(self.ball_target_rect):
-            self.ball_y_direction = self.ball_y_direction * -1
-        """
-        if count == 5:
-            self.reward += 10000
-            self.rewhist.append(self.reward)
-        """
-        'did the opposite one score'
-        terminated = False
-
-        'negative reward for the loss of a point'
-        if self.ball_target_rect.x >= 790:
-            self.temp_reward -= 100
-            self.rewhist.append(self.temp_reward)
-            if len(self.rewhist) > 2:
-                self.rewhistnp = np.array(self.rewhist)
-                self.reward = (self.temp_reward - self.rewhistnp.mean()) / (np.std(self.rewhistnp) + 1e-10)
-            terminated = True
-            """
-            if done:
-                self.reset()
-            """
-
-        # print(f"rewhistnpstd: {np.std(self.rewhistnp)}")
-
-        # self.render()
-        truncated = False
-        return observation, self.reward, terminated, truncated, info
-
-    def render(self, mode="human"):
+    def render(self):
         import pygame
         self.window.blit(self.dummy_paddle, self.dummy_paddle_rect)
         self.window.blit(self.paddle_agent, self.paddle_agent_rect)
